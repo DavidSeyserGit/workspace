@@ -1,0 +1,83 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg
+*.egg-info/
+.eggs/
+dist/
+build/
+pip-wheel-metadata/
+*.manifest
+*.spec
+
+# --- Virtual environments ---
+.venv/
+venv/
+env/
+.env/
+
+# --- Test / lint / type check ---
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+.hypothesis/
+
+# --- Jupyter ---
+.ipynb_checkpoints/
+
+# --- OS / editor ---
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+.idea/
+.vscode/
+*.code-workspace
+
+# --- Secrets / local config ---
+.env
+.env.*
+!.env.example
+secrets.yaml
+*.pem
+
+# --- ML training outputs ---
+runs/
+wandb/
+benchmark_results/
+exports/
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+*.bin
+*.onnx
+
+# --- Datasets (memmap token bins, downloads, HF cache in-repo) ---
+data/**/*
+!data/**/.gitkeep
+
+# Hugging Face / dataset caches (also see /workspace/.gitignore for .hf/)
+.hf/
+.cache/
+hf_cache/
+datasets_cache/
+*_hf_datasets_*
+**/.hf/**/*.lock
+*.arrow
+
+# --- Logs ---
+*.log
+logs/
+tensorboard/
+lightning_logs/
+
+# --- torch.compile / profiling ---
+torchinductor/
+triton/

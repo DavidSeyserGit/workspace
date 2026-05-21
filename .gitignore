@@ -1,0 +1,21 @@
+# Workspace-level ignores (git root is /workspace, not rex1/)
+
+# --- Hugging Face (datasets + models downloaded during data prep) ---
+.hf/
+
+# --- PyTorch hub / inductor / compile cache ---
+.torch/
+tmp/
+
+# --- Editor / local tooling ---
+.kilo/
+.cursor/
+
+# --- OS ---
+.DS_Store
+Thumbs.db
+
+# --- Secrets ---
+.env
+.env.*
+!.env.example

@@ -1,0 +1,228 @@
+# Ouro Stage 1 — large-scale stable pretrain (~2.5–3.5B SmolLM2 tokens).
+#
+# Target mix (benchmark-oriented, expanded vs old mixed-2):
+#   FineWeb-Edu      ~32%   general educational web
+#   FineWeb          ~10%   broad web (DCLM-style diversity)
+#   Cosmopedia       ~22%   synthetic textbooks / stories (all configs)
+#   Wikipedia        ~10%   factual prose (ARC / SciQ / MMLU)
+#   Open-Web-Math    ~8%    math reasoning
+#   CodeParrot       ~8%    code
+#   TinyStories      ~5%    commonsense / HellaSwag-style
+#   WikiText-103     ~2%    clean wiki-style prose
+#   arXiv abstracts  ~3%    STEM
+#
+# Build data (~several hours streaming download):
+#   python download_data.py --config config-ouro-stage1.yaml
+#
+# Train (~300k steps ≈ 4.9B tokens @ bs=4×2×2048):
+#   python train.py --config config-ouro-stage1.yaml
+
+model:
+  vocab_size: null
+  max_seq_len: 2048
+  d_model: 1536
+  n_heads: 16
+  n_kv_heads: 4
+  n_layers: 8
+  recurrence_steps: 4
+  ffn_dim: 3968
+  dropout: 0.0
+  norm_eps: 1.0e-5
+  tie_embeddings: true
+  use_step_embeddings: true
+  use_sandwich_norm: true
+  use_per_step_loss: false
+  use_exit_gates: true
+  exit_gate_beta: 0.1
+  local_block_size: 0
+  rope_theta: 50000.0
+  early_exit_threshold: null
+  initializer_range: 0.02
+
+data:
+  tokenizer_name: HuggingFaceTB/SmolLM2-360M
+  block_size: 2048
+  stride: 2048
+  pack_sequences: true
+  train_bin: data/stage1-smollm/train.bin
+  val_bin: data/stage1-smollm/val.bin
+  num_workers: 4
+  download:
+    sources:
+      # --- General educational web (~32%) ---
+      - name: fineweb_edu
+        dataset_name: HuggingFaceFW/fineweb-edu
+        dataset_config: sample-10BT
+        text_column: text
+        train_split: train
+        split_strategy: head
+        streaming: true
+        max_train_docs: 900000
+        max_val_docs: 12000
+
+      # --- Broad web (~10%) ---
+      - name: fineweb
+        dataset_name: HuggingFaceFW/fineweb
+        dataset_config: sample-10BT
+        text_column: text
+        train_split: train
+        split_strategy: head
+        streaming: true
+        max_train_docs: 350000
+        max_val_docs: 8000
+
+      # --- Synthetic textbooks / stories (~22%) ---
+      - name: cosmopedia_web
+        dataset_name: HuggingFaceTB/cosmopedia
+        dataset_config: web_samples_v2
+        text_column: text
+        train_split: train
+        split_strategy: head
+        streaming: true
+        max_train_docs: 80000
+        max_val_docs: 5000
+      - name: cosmopedia_khanacademy
+        dataset_name: HuggingFaceTB/cosmopedia
+        dataset_config: khanacademy
+        text_column: text
+        train_split: train
+        split_strategy: head
+        streaming: true
+        max_train_docs: 80000
+        max_val_docs: 5000
+      - name: cosmopedia_openstax
+        dataset_name: HuggingFaceTB/cosmopedia
+        dataset_config: openstax
+        text_column: text
+        train_split: train
+        split_strategy: head
+        streaming: true
+        max_train_docs: 80000
+        max_val_docs: 5000
+      - name: cosmopedia_auto_math
+        dataset_name: HuggingFaceTB/cosmopedia
+        dataset_config: auto_math_text
+        text_column: text
+        train_split: train
+        split_strategy: head
+        streaming: true
+        max_train_docs: 80000
+        max_val_docs: 5000
+      - name: cosmopedia_stanford
+        dataset_name: HuggingFaceTB/cosmopedia
+        dataset_config: stanford
+        text_column: text
+        train_split: train
+        split_strategy: head
+        streaming: true
+        max_train_docs: 80000
+        max_val_docs: 5000
+      - name: cosmopedia_wikihow
+        dataset_name: HuggingFaceTB/cosmopedia
+        dataset_config: wikihow
+        text_column: text
+        train_split: train
+        split_strategy: head
+        streaming: true
+        max_train_docs: 70000
+        max_val_docs: 4000
+
+      # --- Factual prose (~10%) ---
+      - name: wikipedia_en
+        dataset_name: wikimedia/wikipedia
+        dataset_config: "20231101.en"
+        text_column: text
+        train_split: train
+        split_strategy: head
+        streaming: true
+        max_train_docs: 150000
+        max_val_docs: 6000
+
+      # --- Math (~8%) ---
+      - name: open_web_math
+        dataset_name: open-web-math/open-web-math
+        text_column: text
+        train_split: train
+        split_strategy: head
+        streaming: true
+        max_train_docs: 120000
+        max_val_docs: 5000
+
+      # --- Code (~8%) ---
+      - name: codeparrot_clean
+        dataset_name: codeparrot/codeparrot-clean
+        text_column: content
+        train_split: train
+        split_strategy: head
+        streaming: true
+        max_train_docs: 70000
+        max_val_docs: 3000
+
+      # --- Stories / commonsense (~5%) ---
+      - name: tinystories
+        dataset_name: roneneldan/TinyStories
+        text_column: text
+        train_split: train
+        val_split: validation
+        split_strategy: head
+        streaming: true
+        max_train_docs: 300000
+        max_val_docs: 6000
+
+      # --- Clean wiki-style text (~2%) ---
+      - name: wikitext103
+        dataset_name: wikitext
+        dataset_config: wikitext-103-raw-v1
+        text_column: text
+        train_split: train
+        val_split: validation
+        split_strategy: head
+        streaming: false
+        max_train_docs: 100000
+        max_val_docs: 5000
+
+      # --- STEM abstracts (~3%) ---
+      - name: arxiv_abstracts
+        dataset_name: nick007x/arxiv-papers
+        text_column: [title, subjects, abstract]
+        text_template: "Title: {title}\nSubjects: {subjects}\nAbstract: {abstract}"
+        train_split: train
+        split_strategy: head
+        streaming: true
+        max_train_docs: 50000
+        max_val_docs: 5000
+
+train:
+  seed: 1337
+  device: auto
+  dtype: bfloat16
+  out_dir: runs/rex-ouro-stage1
+  batch_size: 4
+  gradient_accumulation_steps: 2
+  epochs: 30
+  max_steps: 300000
+  learning_rate: 3.0e-4
+  min_lr: 3.0e-5
+  lr_schedule: warmup_stable_cosine
+  stable_steps: 200000
+  warmup_steps: 3000
+  weight_decay: 0.1
+  betas: [0.9, 0.95]
+  eps: 1.0e-8
+  grad_clip: 1.0
+  compile: true
+  resume: null
+  log_every: 10
+  eval_every: 2000
+  eval_batches: 100
+  save_every: 10000
+  wandb:
+    enabled: true
+    project: rex
+    name: rex-ouro-stage1-large
+    group: ouro-pipeline
+    tags: [ouro, stage1, looplm, 300m, large-corpus]
+    notes: >
+      Expanded stage-1 corpus (~2.5–3.5B SmolLM2 tokens). Full Cosmopedia suite,
+      2× FineWeb-Edu, added FineWeb general, higher caps on wiki/math/code/stories.
+    mode: online

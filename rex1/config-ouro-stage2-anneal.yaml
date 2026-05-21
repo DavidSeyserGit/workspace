@@ -1,0 +1,65 @@
+# Ouro Stage 2 — cosine anneal on HQ mix (CT annealing analogue at 300M scale).
+# Train: python train.py --config config-ouro-stage2-anneal.yaml
+
+model:
+  vocab_size: null
+  max_seq_len: 2048
+  d_model: 1536
+  n_heads: 16
+  n_kv_heads: 4
+  n_layers: 8
+  recurrence_steps: 4
+  ffn_dim: 3968
+  dropout: 0.0
+  norm_eps: 1.0e-5
+  tie_embeddings: true
+  use_step_embeddings: true
+  use_sandwich_norm: true
+  use_per_step_loss: false
+  use_exit_gates: true
+  exit_gate_beta: 0.05
+  local_block_size: 0
+  rope_theta: 50000.0
+  early_exit_threshold: 0.85
+  initializer_range: 0.02
+
+data:
+  tokenizer_name: HuggingFaceTB/SmolLM2-360M
+  block_size: 2048
+  stride: 2048
+  pack_sequences: true
+  train_bin: data/stage1-smollm/train.bin
+  val_bin: data/stage1-smollm/val.bin
+  num_workers: 4
+
+train:
+  seed: 1337
+  device: auto
+  dtype: bfloat16
+  out_dir: runs/rex-ouro-stage2
+  batch_size: 4
+  gradient_accumulation_steps: 2
+  epochs: 5
+  max_steps: 60000
+  learning_rate: 3.0e-5
+  min_lr: 3.0e-6
+  lr_schedule: cosine
+  warmup_steps: 500
+  weight_decay: 0.1
+  betas: [0.9, 0.95]
+  eps: 1.0e-8
+  grad_clip: 1.0
+  compile: true
+  resume: runs/rex-ouro-stage1/ckpt_final.pt
+  log_every: 10
+  eval_every: 1000
+  eval_batches: 100
+  save_every: 5000
+  wandb:
+    enabled: true
+    project: rex
+    name: rex-ouro-stage2-anneal
+    group: ouro-pipeline
+    tags: [ouro, stage2, anneal, looplm]
+    notes: Stage 2 anneal — lower LR, beta=0.05, early_exit_threshold=0.85 for inference.
+    mode: online

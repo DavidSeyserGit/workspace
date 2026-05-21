@@ -1,0 +1,190 @@
+# REX 300M v3 — Ouro-aligned looped pretrain from scratch.
+#
+# Build data:  python download_data.py --config config-mixed-2-v3.yaml
+# Train:       python train.py --config config-mixed-2-v3.yaml
+# Benchmark:   python benchmark.py --config config-mixed-2-v3.yaml --checkpoint runs/rex-300m-v3/ckpt_final.pt --recurrence-sweep
+# lm-eval:      python eval_lm_harness.py --checkpoint runs/rex-300m-v3/ckpt_final.pt --config config-mixed-2-v3.yaml
+
+model:
+  vocab_size: null
+  max_seq_len: 2048
+  d_model: 1536
+  n_heads: 16
+  n_kv_heads: 4
+  n_layers: 8
+  recurrence_steps: 4
+  ffn_dim: 3968
+  dropout: 0.0
+  norm_eps: 1.0e-5
+  tie_embeddings: true
+  use_step_embeddings: true
+  use_sandwich_norm: true
+  use_per_step_loss: false
+  use_exit_gates: true
+  exit_gate_beta: 0.05
+  local_block_size: 0
+  rope_theta: 50000.0
+  early_exit_threshold: null
+  initializer_range: 0.02
+
+data:
+  tokenizer_name: HuggingFaceTB/SmolLM2-360M
+  block_size: 2048
+  stride: 2048
+  pack_sequences: true
+  train_bin: data/stage1-smollm/train.bin
+  val_bin: data/stage1-smollm/val.bin
+  num_workers: 4
+  download:
+    sources:
+      - name: fineweb_edu
+        dataset_name: HuggingFaceFW/fineweb-edu
+        dataset_config: sample-10BT
+        text_column: text
+        train_split: train
+        split_strategy: head
+        streaming: true
+        max_train_docs: 400000
+        max_val_docs: 10000
+      - name: cosmopedia_web
+        dataset_name: HuggingFaceTB/cosmopedia
+        dataset_config: web_samples_v2
+        text_column: text
+        train_split: train
+        split_strategy: head
+        streaming: true
+        max_train_docs: 50000
+        max_val_docs: 5000
+      - name: cosmopedia_khanacademy
+        dataset_name: HuggingFaceTB/cosmopedia
+        dataset_config: khanacademy
+        text_column: text
+        train_split: train
+        split_strategy: head
+        streaming: true
+        max_train_docs: 50000
+        max_val_docs: 5000
+      - name: cosmopedia_openstax
+        dataset_name: HuggingFaceTB/cosmopedia
+        dataset_config: openstax
+        text_column: text
+        train_split: train
+        split_strategy: head
+        streaming: true
+        max_train_docs: 50000
+        max_val_docs: 5000
+      - name: cosmopedia_auto_math
+        dataset_name: HuggingFaceTB/cosmopedia
+        dataset_config: auto_math_text
+        text_column: text
+        train_split: train
+        split_strategy: head
+        streaming: true
+        max_train_docs: 50000
+        max_val_docs: 5000
+      - name: cosmopedia_stanford
+        dataset_name: HuggingFaceTB/cosmopedia
+        dataset_config: stanford
+        text_column: text
+        train_split: train
+        split_strategy: head
+        streaming: true
+        max_train_docs: 50000
+        max_val_docs: 5000
+      - name: cosmopedia_wikihow
+        dataset_name: HuggingFaceTB/cosmopedia
+        dataset_config: wikihow
+        text_column: text
+        train_split: train
+        split_strategy: head
+        streaming: true
+        max_train_docs: 40000
+        max_val_docs: 4000
+      - name: wikipedia_en
+        dataset_name: wikimedia/wikipedia
+        dataset_config: "20231101.en"
+        text_column: text
+        train_split: train
+        split_strategy: head
+        streaming: true
+        max_train_docs: 80000
+        max_val_docs: 5000
+      - name: open_web_math
+        dataset_name: open-web-math/open-web-math
+        text_column: text
+        train_split: train
+        split_strategy: head
+        streaming: true
+        max_train_docs: 75000
+        max_val_docs: 5000
+      - name: codeparrot_clean
+        dataset_name: codeparrot/codeparrot-clean
+        text_column: content
+        train_split: train
+        split_strategy: head
+        streaming: true
+        max_train_docs: 34000
+        max_val_docs: 2500
+      - name: tinystories
+        dataset_name: roneneldan/TinyStories
+        text_column: text
+        train_split: train
+        val_split: validation
+        split_strategy: head
+        streaming: true
+        max_train_docs: 200000
+        max_val_docs: 5000
+      - name: wikitext103
+        dataset_name: wikitext
+        dataset_config: wikitext-103-raw-v1
+        text_column: text
+        train_split: train
+        val_split: validation
+        split_strategy: head
+        streaming: false
+        max_train_docs: 100000
+        max_val_docs: 5000
+      - name: arxiv_abstracts
+        dataset_name: nick007x/arxiv-papers
+        text_column: [title, subjects, abstract]
+        text_template: "Title: {title}\nSubjects: {subjects}\nAbstract: {abstract}"
+        train_split: train
+        split_strategy: head
+        streaming: true
+        max_train_docs: 30000
+        max_val_docs: 5000
+
+train:
+  seed: 1337
+  device: auto
+  dtype: bfloat16
+  out_dir: runs/rex-300m-v3
+  batch_size: 4
+  gradient_accumulation_steps: 2
+  epochs: 10
+  max_steps: 150000
+  learning_rate: 3.0e-4
+  min_lr: 3.0e-5
+  lr_schedule: warmup_stable_cosine
+  stable_steps: 100000
+  warmup_steps: 2000
+  weight_decay: 0.1
+  betas: [0.9, 0.95]
+  eps: 1.0e-8
+  grad_clip: 1.0
+  compile: true
+  resume: null
+  log_every: 10
+  eval_every: 2000
+  eval_batches: 100
+  save_every: 10000
+  wandb:
+    enabled: true
+    project: rex
+    entity: null
+    name: rex1-mixed-2-v3
+    group: pretrain
+    tags: [ouro-aligned, recursive-transformer, 300m, exit-gates, gqa, smollm2]
+    notes: Ouro-aligned v3 — sandwich norm, full attn, token-mean exit gates, KL-uniform loss.
+    mode: online
+    watch: false
