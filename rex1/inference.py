@@ -39,7 +39,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--checkpoint", required=True, help="Path to a checkpoint produced by train.py")
     parser.add_argument("--prompt", required=True, help="Prompt text to continue")
-    parser.add_argument("--config", default="config-mixed-2-v3.yaml", help="Path to YAML config")
+    parser.add_argument("--config", default="config-ouro-stage4-chat.yaml", help="Path to YAML config")
     parser.add_argument("--device", default="auto", help="Device to use: auto, cuda, cpu, etc.")
     parser.add_argument("--dtype", default=None, help="Override inference dtype: bfloat16, float16, or float32")
     parser.add_argument("--max-new-tokens", type=int, default=100, help="Number of tokens to generate")
@@ -68,7 +68,38 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Disable KV-cache accelerated generation",
     )
+    parser.add_argument(
+        "--stop-on-role-tokens",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Truncate generation at <|system|>, <|user|>, or <|tool|> (default: true)",
+    )
     return parser
+
+
+def _truncate_at_role_tokens(text: str, stop_strings: tuple[str, ...]) -> str:
+    """Keep only the first assistant continuation; drop spurious new turns."""
+    marker = "<|assistant|>\n"
+    pos = text.rfind(marker)
+    if pos == -1:
+        marker = "<|assistant|>"
+        pos = text.rfind(marker)
+        if pos == -1:
+            return text
+        suffix_start = pos + len(marker)
+        if suffix_start < len(text) and text[suffix_start] == "\n":
+            suffix_start += 1
+    else:
+        suffix_start = pos + len(marker)
+
+    prefix = text[:suffix_start]
+    suffix = text[suffix_start:]
+    cut = len(suffix)
+    for stop in stop_strings:
+        idx = suffix.find(stop)
+        if idx != -1:
+            cut = min(cut, idx)
+    return prefix + suffix[:cut].rstrip()
 
 
 def main() -> None:
@@ -102,7 +133,14 @@ def main() -> None:
             use_kv_cache=not args.no_kv_cache,
         )
 
-    print(tokenizer.decode(output_ids[0].tolist(), skip_special_tokens=True))
+    print(
+        _truncate_at_role_tokens(
+            tokenizer.decode(output_ids[0].tolist(), skip_special_tokens=True),
+            ("<|system|>", "<|user|>", "<|tool|>", "<|system||>", "< |user|>"),
+        )
+        if args.stop_on_role_tokens
+        else tokenizer.decode(output_ids[0].tolist(), skip_special_tokens=True)
+    )
 
 
 if __name__ == "__main__":

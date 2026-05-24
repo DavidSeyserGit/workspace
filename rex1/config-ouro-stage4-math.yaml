@@ -1,0 +1,154 @@
+# Ouro Stage 4 — REX1-Math (math reasoning SFT).
+#
+# Parallel branch from mid-training (same starting point as chat/code).
+#
+# Prerequisite:
+#   runs/rex-ouro-midtrain/ckpt_final.pt
+#
+# Build data (~30–90 min):
+#   python download_data.py --config config-ouro-stage4-math.yaml
+#
+# Train (2 GPU):
+#   torchrun --standalone --nproc_per_node=2 train.py --config config-ouro-stage4-math.yaml \
+#     --init-from runs/rex-ouro-midtrain/ckpt_final.pt
+#
+# Export:
+#   python export_hf.py --checkpoint runs/rex1-math/ckpt_final.pt \
+#     --config config-ouro-stage4-math.yaml \
+#     --out-dir exports/rex1-math --model-name REX1-Math
+
+model:
+  vocab_size: null
+  max_seq_len: 2048
+  d_model: 1536
+  n_heads: 16
+  n_kv_heads: 4
+  n_layers: 8
+  recurrence_steps: 4
+  ffn_dim: 3968
+  dropout: 0.0
+  norm_eps: 1.0e-5
+  tie_embeddings: true
+  use_step_embeddings: true
+  use_sandwich_norm: true
+  use_per_step_loss: false
+  use_exit_gates: true
+  exit_gate_beta: 0.02
+  local_block_size: 0
+  rope_theta: 50000.0
+  early_exit_threshold: 0.85
+  initializer_range: 0.02
+
+data:
+  tokenizer_name: HuggingFaceTB/SmolLM2-360M
+  block_size: 2048
+  stride: 2048
+  pack_sequences: true
+  train_bin: data/math-sft/train.bin
+  val_bin: data/math-sft/val.bin
+  num_workers: 8
+  download:
+    default_system: >
+      You are REX, an expert math tutor. Solve problems step by step.
+      Show your reasoning clearly, then give the final answer.
+    sources:
+      - name: metamathqa
+        dataset_name: meta-math/MetaMathQA
+        text_template: |
+          <|system|>
+          You are an expert math tutor. Show step-by-step reasoning.
+          <|user|>
+          {query}
+          <|assistant|>
+          {response}
+        train_split: train
+        split_strategy: head
+        streaming: false
+        max_train_docs: 150000
+        max_val_docs: 3000
+
+      - name: openmath_instruct
+        dataset_name: nvidia/OpenMathInstruct-2
+        text_template: |
+          <|system|>
+          You are an expert math tutor. Show step-by-step reasoning.
+          <|user|>
+          {problem}
+          <|assistant|>
+          {generated_solution}
+        train_split: train
+        split_strategy: head
+        streaming: true
+        max_train_docs: 80000
+        max_val_docs: 2000
+
+      - name: orca_math
+        dataset_name: microsoft/orca-math-word-problems-200k
+        text_template: |
+          <|system|>
+          You are an expert math tutor. Show step-by-step reasoning.
+          <|user|>
+          {question}
+          <|assistant|>
+          {answer}
+        train_split: train
+        split_strategy: head
+        streaming: true
+        max_train_docs: 100000
+        max_val_docs: 2000
+
+      - name: numina_cot
+        dataset_name: AI-MO/NuminaMath-CoT
+        text_template: |
+          <|system|>
+          You are an expert math tutor. Show step-by-step reasoning.
+          <|user|>
+          {problem}
+          <|assistant|>
+          {solution}
+        train_split: train
+        split_strategy: head
+        streaming: true
+        max_train_docs: 80000
+        max_val_docs: 2000
+
+train:
+  seed: 1337
+  device: auto
+  dtype: bfloat16
+  out_dir: runs/rex1-math
+  batch_size: 16
+  gradient_accumulation_steps: 2
+  epochs: 2
+  max_steps: 8000
+  learning_rate: 2.0e-5
+  min_lr: 2.0e-6
+  lr_schedule: cosine
+  warmup_steps: 100
+  weight_decay: 0.01
+  betas: [0.9, 0.95]
+  eps: 1.0e-8
+  grad_clip: 1.0
+  compile: true
+  init_from: runs/rex-ouro-midtrain/ckpt_final.pt
+  resume: null
+  log_every: 10
+  eval_every: 1000
+  save_every: 1000
+  eval:
+    mode: benchmarks
+    benchmarks:
+      tasks: hellaswag,arc_easy,sciq,openbookqa,val_ppl
+      val_batches: 10
+      batch_size: 2
+      mc_examples: 50
+      quiet: true
+      save: true
+  wandb:
+    enabled: true
+    project: rex
+    name: rex1-math
+    group: ouro-pipeline
+    tags: [ouro, stage4, sft, math, cot, rex1-math]
+    notes: Math reasoning SFT branch from midtrain — REX1-Math.
+    mode: online

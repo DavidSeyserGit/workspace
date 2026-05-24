@@ -1,0 +1,334 @@
+# REX benchmark suite — profiles, task catalog, and pipeline presets.
+#
+# Quick start:
+#   python run_benchmark_suite.py --profile standard --checkpoint runs/rex-ouro-stage1/ckpt_step40000.pt
+#   python run_benchmark_suite.py --profile chat --pipeline ouro
+#   python run_benchmark_suite.py --profile harness_only --harness-smoke \\
+#       --checkpoint runs/rex1-chat/ckpt_final.pt --config config-ouro-stage4-chat.yaml
+#
+# Native tasks run through benchmark.py (fast continuation-loss MC scoring).
+# Harness tasks run through eval_lm_harness.py / lm-eval (publishable comparison).
+
+defaults:
+  device: auto
+  dtype: bfloat16
+  output_dir: benchmark_results
+  val_batches: 20
+  batch_size: 2
+  mc_examples: 200
+  recurrence_steps: null          # null = model config recurrence_steps
+  early_exit_threshold: null      # null = full recurrence at eval (recommended)
+  harness_num_fewshot: 0
+  harness_batch_size: 64
+  parallel_gpus: 2
+  harness_limit: null             # null = full task; set e.g. 100 for smoke tests
+
+# ---------------------------------------------------------------------------
+# Task catalog (documentation + profile building blocks)
+# ---------------------------------------------------------------------------
+tasks:
+  native:
+    # --- Perplexity / language modeling ---
+    val_ppl:
+      category: perplexity
+      description: Packed validation bin from the training config
+      metric: perplexity
+      higher_is_better: false
+    wikitext2_ppl:
+      category: perplexity
+      description: WikiText-2 test perplexity
+      metric: perplexity
+      higher_is_better: false
+    wikitext103_ppl:
+      category: perplexity
+      description: WikiText-103 test perplexity (slower)
+      metric: perplexity
+      higher_is_better: false
+    lambada:
+      category: language
+      description: LAMBADA last-word prediction (continuation loss)
+      metric: accuracy
+      higher_is_better: true
+
+    # --- Multiple-choice / commonsense ---
+    hellaswag:
+      category: commonsense
+      description: HellaSwag 4-way continuation ranking
+      metric: accuracy
+      higher_is_better: true
+    arc_easy:
+      category: reasoning
+      description: ARC-Easy science QA
+      metric: accuracy
+      higher_is_better: true
+    arc_challenge:
+      category: reasoning
+      description: ARC-Challenge science QA
+      metric: accuracy
+      higher_is_better: true
+    piqa:
+      category: commonsense
+      description: PIQA physical commonsense
+      metric: accuracy
+      higher_is_better: true
+    winogrande:
+      category: commonsense
+      description: WinoGrande coreference
+      metric: accuracy
+      higher_is_better: true
+    openbookqa:
+      category: knowledge
+      description: OpenBookQA 4-way science QA
+      metric: accuracy
+      higher_is_better: true
+    boolq:
+      category: reading
+      description: BoolQ yes/no reading comprehension
+      metric: accuracy
+      higher_is_better: true
+    sciq:
+      category: science
+      description: SciQ 4-way science QA
+      metric: accuracy
+      higher_is_better: true
+
+    # --- Instruction following (chat / SFT) ---
+    ifeval_lite:
+      category: instruction
+      description: Small IFEval subset with strict prompt-level checks
+      metric: prompt_strict_accuracy
+      higher_is_better: true
+
+  harness:
+    # lm-eval-harness tasks (comparable to published model cards)
+    hellaswag:
+      category: commonsense
+      description: HellaSwag (acc_norm, harness scoring)
+      metric: acc_norm
+      higher_is_better: true
+    arc_easy:
+      category: reasoning
+      metric: acc_norm
+      higher_is_better: true
+    arc_challenge:
+      category: reasoning
+      metric: acc_norm
+      higher_is_better: true
+    winogrande:
+      category: commonsense
+      metric: acc
+      higher_is_better: true
+    sciq:
+      category: science
+      metric: acc
+      higher_is_better: true
+    openbookqa:
+      category: knowledge
+      metric: acc_norm
+      higher_is_better: true
+    piqa:
+      category: commonsense
+      metric: acc_norm
+      higher_is_better: true
+    boolq:
+      category: reading
+      metric: acc
+      higher_is_better: true
+    lambada_openai:
+      category: language
+      metric: acc
+      higher_is_better: true
+    mmlu:
+      category: knowledge
+      description: MMLU 57-subject knowledge (slow on CPU; use GPU)
+      metric: acc
+      higher_is_better: true
+      num_fewshot: 5
+    gsm8k:
+      category: math
+      description: Grade-school math word problems
+      metric: exact_match
+      higher_is_better: true
+      num_fewshot: 5
+    humaneval:
+      category: code
+      description: HumanEval pass@1 (generation; slow)
+      metric: pass@1
+      higher_is_better: true
+      num_fewshot: 0
+    ifeval:
+      category: instruction
+      description: Full IFEval strict prompt accuracy
+      metric: prompt_level_strict_acc
+      higher_is_better: true
+      num_fewshot: 0
+    truthfulqa_mc2:
+      category: safety
+      description: TruthfulQA multiple-choice
+      metric: acc
+      higher_is_better: true
+      num_fewshot: 0
+
+# ---------------------------------------------------------------------------
+# Profiles — pick one with:  python run_benchmark_suite.py --profile <name>
+# ---------------------------------------------------------------------------
+profiles:
+  quick:
+    description: >
+      Fast inline eval (~10 min). Good during training or smoke tests.
+    native_tasks:
+      - val_ppl
+      - hellaswag
+      - arc_easy
+      - sciq
+      - openbookqa
+    harness_tasks: []
+    val_batches: 10
+    mc_examples: 50
+
+  standard:
+    description: >
+      Full native suite for checkpoint selection (~30-45 min on GPU).
+      Covers perplexity, commonsense, reasoning, and science MC tasks.
+    native_tasks:
+      - val_ppl
+      - wikitext2_ppl
+      - hellaswag
+      - arc_easy
+      - arc_challenge
+      - piqa
+      - sciq
+      - openbookqa
+      - winogrande
+      - boolq
+      - lambada
+    harness_tasks: []
+    val_batches: 20
+    mc_examples: 200
+
+  chat:
+    description: >
+      Standard native suite plus IFEval-lite for SFT / chat checkpoints.
+    native_tasks:
+      - val_ppl
+      - wikitext2_ppl
+      - hellaswag
+      - arc_easy
+      - arc_challenge
+      - piqa
+      - sciq
+      - openbookqa
+      - winogrande
+      - boolq
+      - ifeval_lite
+    harness_tasks: []
+    val_batches: 20
+    mc_examples: 100
+
+  full:
+    description: >
+      Native suite + lm-eval harness for publishable comparison numbers.
+      Expect 2-6 hours depending on GPU and harness_limit.
+    native_tasks:
+      - val_ppl
+      - wikitext2_ppl
+      - wikitext103_ppl
+      - hellaswag
+      - arc_easy
+      - arc_challenge
+      - piqa
+      - sciq
+      - openbookqa
+      - winogrande
+      - boolq
+      - lambada
+      - ifeval_lite
+    harness_tasks:
+      - hellaswag
+      - arc_easy
+      - arc_challenge
+      - winogrande
+      - sciq
+      - openbookqa
+      - piqa
+      - boolq
+      - lambada_openai
+      - mmlu
+      - gsm8k
+      - ifeval
+    val_batches: 20
+    mc_examples: 200
+    harness_num_fewshot: 0
+
+  harness_only:
+    description: >
+      lm-eval harness only — use when comparing to Pythia / SmolLM2 tables.
+    native_tasks: []
+    harness_tasks:
+      - hellaswag
+      - arc_easy
+      - arc_challenge
+      - winogrande
+      - sciq
+      - openbookqa
+      - piqa
+      - boolq
+      - lambada_openai
+      - mmlu
+      - gsm8k
+      - ifeval
+    harness_num_fewshot: 0
+
+  harness_smoke:
+    description: >
+      lm-eval harness with 100 examples per task (~15-30 min). Good for quick
+      harness sanity checks before a full run.
+    native_tasks: []
+    harness_tasks:
+      - hellaswag
+      - arc_easy
+      - arc_challenge
+      - winogrande
+      - sciq
+      - openbookqa
+      - piqa
+      - boolq
+      - lambada_openai
+      - mmlu
+      - gsm8k
+      - ifeval
+    harness_num_fewshot: 0
+    harness_limit: 100
+
+# ---------------------------------------------------------------------------
+# Pipeline presets — compare checkpoints across the Ouro curriculum
+# ---------------------------------------------------------------------------
+pipelines:
+  ouro:
+    description: Default REX Ouro pipeline checkpoints (edit paths if yours differ)
+    profile: standard
+    entries:
+      - label: stage1-40k
+        checkpoint: runs/rex-ouro-stage1/ckpt_step40000.pt
+        config: config-ouro-stage1.yaml
+      - label: stage2-final
+        checkpoint: runs/rex-ouro-stage2/ckpt_final.pt
+        config: config-ouro-stage2-anneal.yaml
+      - label: midtrain-final
+        checkpoint: runs/rex-ouro-midtrain/ckpt_final.pt
+        config: config-ouro-stage3-midtrain.yaml
+      - label: chat-final
+        checkpoint: runs/rex1-chat/ckpt_final.pt
+        config: config-ouro-stage4-chat.yaml
+        profile: chat
+
+  ouro_chat:
+    description: Midtrain vs chat SFT with instruction-following metrics
+    profile: chat
+    entries:
+      - label: midtrain-final
+        checkpoint: runs/rex-ouro-midtrain/ckpt_final.pt
+        config: config-ouro-stage3-midtrain.yaml
+      - label: chat-final
+        checkpoint: runs/rex1-chat/ckpt_final.pt
+        config: config-ouro-stage4-chat.yaml

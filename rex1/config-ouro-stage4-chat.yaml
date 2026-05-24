@@ -1,0 +1,192 @@
+# Ouro Stage 4 — REX1-Chat (general instruct SFT).
+#
+# Parallel branch from mid-training (not stacked on code/math).
+#
+# Prerequisite:
+#   runs/rex-ouro-midtrain/ckpt_final.pt
+#
+# Build data (~45–90 min):
+#   python download_data.py --config config-ouro-stage4-chat.yaml
+#
+# Train (2 GPU):
+#   torchrun --standalone --nproc_per_node=2 train.py --config config-ouro-stage4-chat.yaml \
+#     --init-from runs/rex-ouro-midtrain/ckpt_final.pt
+#
+# Export:
+#   python export_hf.py --checkpoint runs/rex1-chat/ckpt_final.pt \
+#     --config config-ouro-stage4-chat.yaml \
+#     --out-dir exports/rex1-chat --model-name REX1-Chat
+
+model:
+  vocab_size: null
+  max_seq_len: 2048
+  d_model: 1536
+  n_heads: 16
+  n_kv_heads: 4
+  n_layers: 8
+  recurrence_steps: 4
+  ffn_dim: 3968
+  dropout: 0.0
+  norm_eps: 1.0e-5
+  tie_embeddings: true
+  use_step_embeddings: true
+  use_sandwich_norm: true
+  use_per_step_loss: false
+  use_exit_gates: true
+  exit_gate_beta: 0.02
+  local_block_size: 0
+  rope_theta: 50000.0
+  early_exit_threshold: 0.85
+  initializer_range: 0.02
+
+data:
+  tokenizer_name: HuggingFaceTB/SmolLM2-360M
+  block_size: 2048
+  stride: 2048
+  pack_sequences: true
+  train_bin: data/chat-sft/train.bin
+  val_bin: data/chat-sft/val.bin
+  train_bins:
+    - path: data/chat-sft/train.bin
+    - path: data/stage1-smollm/train.bin
+      max_tokens: 120000000
+  val_bins:
+    - path: data/chat-sft/val.bin
+    - path: data/stage1-smollm/val.bin
+      max_tokens: 3000000
+  num_workers: 8
+  download:
+    default_system: >
+      You are REX, a helpful and honest assistant. Answer clearly and concisely.
+    sources:
+      # --- General multi-turn chat / instruction following ---
+      - name: openhermes
+        dataset_name: teknium/OpenHermes-2.5
+        conversation_column: conversations
+        train_split: train
+        split_strategy: head
+        streaming: true
+        max_train_docs: 80000
+        max_val_docs: 2000
+
+      - name: ultrachat
+        dataset_name: HuggingFaceH4/ultrachat_200k
+        conversation_column: messages
+        train_split: train_sft
+        split_strategy: head
+        streaming: false
+        max_train_docs: 100000
+        max_val_docs: 2000
+
+      - name: smoltalk
+        dataset_name: HuggingFaceTB/smoltalk
+        dataset_config: all
+        conversation_column: messages
+        train_split: train
+        split_strategy: head
+        streaming: true
+        max_train_docs: 50000
+        max_val_docs: 1500
+
+      # High-quality human-written instructions; useful for crisp assistant style.
+      - name: no_robots
+        dataset_name: HuggingFaceH4/no_robots
+        conversation_column: messages
+        train_split: train
+        split_strategy: head
+        streaming: false
+        max_train_docs: 9000
+        max_val_docs: 500
+
+      # Broad Tulu mixture for task diversity (FLAN-style tasks, QA, summaries,
+      # classification, and instruction following).
+      - name: tulu_v2_sft
+        dataset_name: allenai/tulu-v2-sft-mixture
+        conversation_column: messages
+        train_split: train
+        split_strategy: head
+        streaming: true
+        max_train_docs: 120000
+        max_val_docs: 2000
+
+      # Preference-filtered responses; use only the chosen side as SFT data.
+      - name: ultrafeedback_chosen
+        dataset_name: argilla/ultrafeedback-binarized-preferences-cleaned
+        conversation_column: chosen
+        train_split: train
+        split_strategy: head
+        streaming: true
+        max_train_docs: 80000
+        max_val_docs: 1500
+
+      # Smaller classic instruction set kept as a stabilizing simple-format mix.
+      - name: dolly
+        dataset_name: databricks/databricks-dolly-15k
+        text_template: |
+          <|system|>
+          You are a helpful assistant.
+          <|user|>
+          {instruction}
+          <|assistant|>
+          {response}
+        train_split: train
+        split_strategy: head
+        streaming: false
+        max_train_docs: 15000
+        max_val_docs: 500
+
+      # General-language replay to preserve grammar, prose, and base LM fluency
+      # while instruction tuning. Kept modest so it regularizes instead of
+      # overwhelming the chat format.
+      - name: stage1_replay
+        replay_bin: data/stage1-smollm/train.bin
+        replay_val_bin: data/stage1-smollm/val.bin
+        max_train_tokens: 120000000
+        max_val_tokens: 3000000
+        seed: 2026
+        replay_chunk_min: 512
+        replay_chunk_max: 4096
+
+train:
+  seed: 1337
+  device: auto
+  dtype: bfloat16
+  out_dir: runs/rex1-chat
+  batch_size: 16
+  gradient_accumulation_steps: 2
+  epochs: 4
+  max_steps: 20000
+  learning_rate: 2.0e-5
+  min_lr: 2.0e-6
+  lr_schedule: cosine
+  warmup_steps: 100
+  weight_decay: 0.01
+  betas: [0.9, 0.95]
+  eps: 1.0e-8
+  grad_clip: 1.0
+  compile: true
+  init_from: runs/rex-ouro-midtrain/ckpt_final.pt
+  resume: null
+  log_every: 10
+  eval_every: 1000
+  save_every: 1000
+  eval:
+    mode: benchmarks
+    benchmarks:
+      tasks: ifeval_lite,hellaswag,arc_easy,sciq,openbookqa,winogrande,val_ppl
+      val_batches: 10
+      batch_size: 2
+      mc_examples: 50
+      quiet: true
+      save: true
+  wandb:
+    enabled: true
+    project: rex
+    name: rex1-chat
+    group: ouro-pipeline
+    tags: [ouro, stage4, sft, chat, instruct, rex1-chat]
+    notes: >
+      General instruct SFT branch from midtrain — REX1-Chat.
+      Expanded mix with OpenHermes, UltraChat, SmolTalk, NoRobots,
+      Tulu-v2-SFT, UltraFeedback chosen responses, and Dolly.
+    mode: online

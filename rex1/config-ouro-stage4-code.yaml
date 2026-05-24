@@ -1,0 +1,193 @@
+# Ouro Stage 4 — REX1-Code (code + tool-calling SFT).
+#
+# Parallel branch from mid-training (same starting point as chat/math).
+#
+# Prerequisite:
+#   runs/rex-ouro-midtrain/ckpt_final.pt
+#
+# Chat format (use the same at inference):
+#   <|system|>\n...
+#   <|user|>\n...
+#   <|assistant|>\n...           # may include <tool_call>{...}</tool_call>
+#   <|tool|>\n...                # tool result JSON / text
+#   <|assistant|>\n...
+#
+# Build SFT data (~30–90 min):
+#   python download_data.py --config config-ouro-stage4-code.yaml
+#
+# Train (2 GPU):
+#   torchrun --standalone --nproc_per_node=2 train.py --config config-ouro-stage4-code.yaml \
+#     --init-from runs/rex-ouro-midtrain/ckpt_final.pt
+#
+# Export:
+#   python export_hf.py --checkpoint runs/rex1-code/ckpt_final.pt \
+#     --config config-ouro-stage4-code.yaml \
+#     --out-dir exports/rex1-code --model-name REX1-Code
+
+model:
+  vocab_size: null
+  max_seq_len: 2048
+  d_model: 1536
+  n_heads: 16
+  n_kv_heads: 4
+  n_layers: 8
+  recurrence_steps: 4
+  ffn_dim: 3968
+  dropout: 0.0
+  norm_eps: 1.0e-5
+  tie_embeddings: true
+  use_step_embeddings: true
+  use_sandwich_norm: true
+  use_per_step_loss: false
+  use_exit_gates: true
+  exit_gate_beta: 0.02
+  local_block_size: 0
+  rope_theta: 50000.0
+  early_exit_threshold: 0.85
+  initializer_range: 0.02
+
+data:
+  tokenizer_name: HuggingFaceTB/SmolLM2-360M
+  block_size: 2048
+  stride: 2048
+  pack_sequences: true
+  train_bin: data/code-sft/train.bin
+  val_bin: data/code-sft/val.bin
+  num_workers: 8
+  download:
+    default_system: >
+      You are REX, an expert coding assistant with access to tools.
+      Write clear, correct code and explain your reasoning briefly.
+      When a tool is needed, respond with a JSON object inside
+      <tool_call>...</tool_call> tags. After receiving a <|tool|> result,
+      continue as <|assistant|> with the final answer.
+    sources:
+      # --- Tool calling (~40%) ---
+      - name: glaive_function_calling
+        dataset_name: glaiveai/glaive-function-calling-v2
+        conversation_column: chat
+        system_column: system
+        train_split: train
+        split_strategy: head
+        streaming: false
+        max_train_docs: 100000
+        max_val_docs: 2000
+
+      - name: hermes_function_calling
+        dataset_name: NousResearch/hermes-function-calling-v1
+        conversation_column: conversations
+        train_split: train
+        split_strategy: head
+        streaming: true
+        max_train_docs: 30000
+        max_val_docs: 500
+
+      # Open replacement for gated Salesforce/xlam-function-calling-60k
+      - name: toolace_function_calling
+        dataset_name: Team-ACE/ToolACE
+        conversation_column: conversations
+        system_column: system
+        train_split: train
+        split_strategy: head
+        streaming: true
+        max_train_docs: 60000
+        max_val_docs: 1000
+
+      # --- Code instruction (~40%) ---
+      - name: python_code_instructions
+        dataset_name: iamtarun/python_code_instructions_18k_alpaca
+        text_template: |
+          <|system|>
+          You are an expert Python programmer. Write clean, correct code.
+          <|user|>
+          {instruction}
+          {input}
+          <|assistant|>
+          {output}
+        train_split: train
+        split_strategy: head
+        streaming: false
+        max_train_docs: 18000
+        max_val_docs: 500
+
+      - name: code_feedback
+        dataset_name: m-a-p/Code-Feedback
+        text_template: |
+          <|system|>
+          You are an expert coding assistant. Answer coding questions clearly.
+          <|user|>
+          {query}
+          <|assistant|>
+          {answer}
+        train_split: train
+        split_strategy: head
+        streaming: true
+        max_train_docs: 50000
+        max_val_docs: 1000
+
+      - name: glaive_code_assistant
+        dataset_name: glaiveai/glaive-code-assistant-v3
+        conversation_column: chat
+        system_column: system
+        train_split: train
+        split_strategy: head
+        streaming: false
+        max_train_docs: 80000
+        max_val_docs: 2000
+
+      # --- Short coding chats (~20%) ---
+      - name: evol_instruct_code
+        dataset_name: nickrosh/Evol-Instruct-Code-80k-v1
+        text_template: |
+          <|system|>
+          You are a helpful coding assistant.
+          <|user|>
+          {instruction}
+          <|assistant|>
+          {output}
+        train_split: train
+        split_strategy: head
+        streaming: true
+        max_train_docs: 40000
+        max_val_docs: 1000
+
+train:
+  seed: 1337
+  device: auto
+  dtype: bfloat16
+  out_dir: runs/rex1-code
+  batch_size: 16
+  gradient_accumulation_steps: 2
+  epochs: 2000
+  max_steps: 40000
+  learning_rate: 2.0e-5
+  min_lr: 2.0e-6
+  lr_schedule: cosine
+  warmup_steps: 100
+  weight_decay: 0.01
+  betas: [0.9, 0.95]
+  eps: 1.0e-8
+  grad_clip: 1.0
+  compile: true
+  init_from: runs/rex-ouro-midtrain/ckpt_final.pt
+  resume: null
+  log_every: 10
+  eval_every: 1000
+  save_every: 1000
+  eval:
+    mode: benchmarks
+    benchmarks:
+      tasks: hellaswag,arc_easy,sciq,openbookqa,val_ppl
+      val_batches: 10
+      batch_size: 2
+      mc_examples: 50
+      quiet: true
+      save: true
+  wandb:
+    enabled: true
+    project: rex
+    name: rex1-code
+    group: ouro-pipeline
+    tags: [ouro, stage4, sft, code, tool-calling, rex1-code]
+    notes: Code + tool-calling SFT branch from midtrain — REX1-Code.
+    mode: online

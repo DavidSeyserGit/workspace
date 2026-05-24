@@ -1,0 +1,457 @@
+# Ouro Stage 1 (long) — benchmark-complete pretrain mix (~30–40B unique tokens).
+#
+# Covers harness disciplines at pretrain time:
+#   commonsense (HellaSwag/WinoGrande/PIQA proxy) | reasoning/science MC (ARC/SciQ/OBQA)
+#   knowledge (MMLU via wiki + textbooks + edu web) | reading (BoolQ/SQuAD/TriviaQA)
+#   math (GSM8K-style Q&A + open math web + MetaMath) | code (Python-Edu + OPC + snippets)
+#   language/PPL (WikiText)                          | factual/safety proxy (TruthfulQA)
+#
+# Build data (expect 12–24 hours — run overnight):
+#   python download_data.py --config config-ouro-stage1-long.yaml
+#
+# Train from scratch (~52B tokens processed @ 380k steps):
+#   torchrun --standalone --nproc_per_node=2 train.py --config config-ouro-stage1-long.yaml
+#
+# For ~100B processed, set max_steps: 760000 and stable_steps: 700000.
+#
+# Target mix (approximate token share after tokenization):
+#   Edu web (FineWeb-Edu, DCLM, SmolLM dedup)         ~38%
+#   Textbooks / synthetic (Cosmopedia suite)            ~16%
+#   Wikipedia + WikiText                                ~10%
+#   Math (web + Q&A + GSM-style)                        ~16%
+#   Code (Python-Edu, CodeParrot, OPC + anneal)         ~12%
+#   Reading QA (BoolQ, SQuAD, SciQ, TriviaQA, OBQA)     ~5%
+#   Stories / commonsense (TinyStories)                 ~4%
+#   STEM (arXiv) + factual QA (TruthfulQA)              ~2%
+
+model:
+  vocab_size: null
+  max_seq_len: 2048
+  d_model: 1536
+  n_heads: 16
+  n_kv_heads: 4
+  n_layers: 8
+  recurrence_steps: 4
+  ffn_dim: 3968
+  dropout: 0.0
+  norm_eps: 1.0e-5
+  tie_embeddings: true
+  use_step_embeddings: true
+  use_sandwich_norm: true
+  use_per_step_loss: false
+  use_exit_gates: true
+  exit_gate_beta: 0.15
+  local_block_size: 0
+  rope_theta: 50000.0
+  early_exit_threshold: null
+  initializer_range: 0.02
+
+data:
+  tokenizer_name: HuggingFaceTB/SmolLM2-360M
+  block_size: 2048
+  stride: 2048
+  pack_sequences: true
+  train_bin: data/stage1-long/train.bin
+  val_bin: data/stage1-long/val.bin
+  num_workers: 8
+  download:
+    sources:
+      # --- SmolLM-Corpus: deduplicated FineWeb-Edu (~14%) ---
+      - name: smollm_fineweb_edu_dedup
+        dataset_name: HuggingFaceTB/smollm-corpus
+        dataset_config: fineweb-edu-dedup
+        text_column: text
+        train_split: train
+        split_strategy: head
+        streaming: true
+        max_train_docs: 1500000
+        max_val_docs: 12000
+
+      # --- SmolLM-Corpus: Cosmopedia v2 (~8%) ---
+      - name: smollm_cosmopedia_v2
+        dataset_name: HuggingFaceTB/smollm-corpus
+        dataset_config: cosmopedia-v2
+        text_column: text
+        train_split: train
+        split_strategy: head
+        streaming: true
+        max_train_docs: 800000
+        max_val_docs: 10000
+
+      # --- SmolLM-Corpus: educational Python (~5%) ---
+      - name: smollm_python_edu
+        dataset_name: HuggingFaceTB/smollm-corpus
+        dataset_config: python-edu
+        text_column: text
+        train_split: train
+        split_strategy: head
+        streaming: true
+        max_train_docs: 400000
+        max_val_docs: 6000
+
+      # --- FineWeb-Edu streaming sample (~12%) ---
+      - name: fineweb_edu
+        dataset_name: HuggingFaceFW/fineweb-edu
+        dataset_config: sample-10BT
+        text_column: text
+        train_split: train
+        split_strategy: head
+        streaming: true
+        max_train_docs: 2000000
+        max_val_docs: 15000
+
+      # --- DCLM-Edu high-score slice (~8%) ---
+      - name: dclm_edu_high
+        dataset_name: HuggingFaceTB/dclm-edu
+        text_column: text
+        train_split: train
+        split_strategy: head
+        streaming: true
+        row_filter_min:
+          edu_int_score: 3
+        max_train_docs: 1000000
+        max_val_docs: 10000
+
+      # --- DCLM-Edu very-high slice for MMLU depth (~4%) ---
+      - name: dclm_edu_very_high
+        dataset_name: HuggingFaceTB/dclm-edu
+        text_column: text
+        train_split: train
+        split_strategy: head
+        streaming: true
+        row_filter_min:
+          edu_int_score: 4
+        max_train_docs: 400000
+        max_val_docs: 6000
+
+      # --- Broad web (~6%) ---
+      - name: fineweb
+        dataset_name: HuggingFaceFW/fineweb
+        dataset_config: sample-10BT
+        text_column: text
+        train_split: train
+        split_strategy: head
+        streaming: true
+        max_train_docs: 800000
+        max_val_docs: 12000
+
+      # --- Cosmopedia textbook configs (~8%, MMLU STEM + PIQA-style how-to) ---
+      - name: cosmopedia_khanacademy
+        dataset_name: HuggingFaceTB/cosmopedia
+        dataset_config: khanacademy
+        text_column: text
+        train_split: train
+        split_strategy: head
+        streaming: true
+        max_train_docs: 150000
+        max_val_docs: 5000
+      - name: cosmopedia_openstax
+        dataset_name: HuggingFaceTB/cosmopedia
+        dataset_config: openstax
+        text_column: text
+        train_split: train
+        split_strategy: head
+        streaming: true
+        max_train_docs: 150000
+        max_val_docs: 5000
+      - name: cosmopedia_stanford
+        dataset_name: HuggingFaceTB/cosmopedia
+        dataset_config: stanford
+        text_column: text
+        train_split: train
+        split_strategy: head
+        streaming: true
+        max_train_docs: 100000
+        max_val_docs: 4000
+      - name: cosmopedia_wikihow
+        dataset_name: HuggingFaceTB/cosmopedia
+        dataset_config: wikihow
+        text_column: text
+        train_split: train
+        split_strategy: head
+        streaming: true
+        max_train_docs: 120000
+        max_val_docs: 4000
+      - name: cosmopedia_web
+        dataset_name: HuggingFaceTB/cosmopedia
+        dataset_config: web_samples_v2
+        text_column: text
+        train_split: train
+        split_strategy: head
+        streaming: true
+        max_train_docs: 120000
+        max_val_docs: 4000
+      - name: cosmopedia_auto_math
+        dataset_name: HuggingFaceTB/cosmopedia
+        dataset_config: auto_math_text
+        text_column: text
+        train_split: train
+        split_strategy: head
+        streaming: true
+        max_train_docs: 150000
+        max_val_docs: 4000
+
+      # --- Factual prose (~8%, MMLU / ARC knowledge) ---
+      - name: wikipedia_en
+        dataset_name: wikimedia/wikipedia
+        dataset_config: "20231101.en"
+        text_column: text
+        train_split: train
+        split_strategy: head
+        streaming: true
+        max_train_docs: 600000
+        max_val_docs: 12000
+
+      # --- Math web + crawl (~8%) ---
+      - name: open_web_math
+        dataset_name: open-web-math/open-web-math
+        text_column: text
+        train_split: train
+        split_strategy: head
+        streaming: true
+        max_train_docs: 500000
+        max_val_docs: 8000
+      - name: opc_fineweb_math
+        dataset_name: OpenCoder-LLM/opc-fineweb-math-corpus
+        text_column: text
+        train_split: train
+        split_strategy: head
+        streaming: true
+        max_train_docs: 350000
+        max_val_docs: 5000
+      - name: megamath_web_pro
+        parquet_files: hf://datasets/LLM360/MegaMath@main/megamath-web-pro/*.parquet
+        text_column: text
+        train_split: train
+        split_strategy: head
+        streaming: true
+        max_train_docs: 350000
+        max_val_docs: 3000
+
+      # --- Math Q&A / GSM-style (~8%, GSM8K + reasoning format) ---
+      - name: metamathqa
+        dataset_name: meta-math/MetaMathQA
+        text_template: |
+          Question: {query}
+          Answer: {response}
+        train_split: train
+        split_strategy: head
+        streaming: false
+        max_train_docs: 200000
+        max_val_docs: 3000
+      - name: openmath_instruct
+        dataset_name: nvidia/OpenMathInstruct-2
+        text_template: |
+          Question: {problem}
+          Answer: {generated_solution}
+        train_split: train
+        split_strategy: head
+        streaming: true
+        max_train_docs: 150000
+        max_val_docs: 3000
+      - name: gsm8k_train
+        dataset_name: openai/gsm8k
+        dataset_config: main
+        text_template: |
+          Question: {question}
+          Answer: {answer}
+        train_split: train
+        split_strategy: head
+        streaming: false
+        max_train_docs: 7473
+        max_val_docs: 500
+      - name: orca_math
+        dataset_name: microsoft/orca-math-word-problems-200k
+        text_template: |
+          Question: {question}
+          Answer: {answer}
+        train_split: train
+        split_strategy: head
+        streaming: true
+        max_train_docs: 120000
+        max_val_docs: 2000
+      - name: numina_cot
+        dataset_name: AI-MO/NuminaMath-CoT
+        text_template: |
+          Question: {problem}
+          Answer: {solution}
+        train_split: train
+        split_strategy: head
+        streaming: true
+        max_train_docs: 100000
+        max_val_docs: 2000
+
+      # --- Code (~12%, HumanEval base literacy) ---
+      - name: codeparrot_clean
+        dataset_name: codeparrot/codeparrot-clean
+        text_column: content
+        train_split: train
+        split_strategy: head
+        streaming: true
+        max_train_docs: 300000
+        max_val_docs: 5000
+      - name: opc_fineweb_code
+        dataset_name: OpenCoder-LLM/opc-fineweb-code-corpus
+        text_column: text
+        train_split: train
+        split_strategy: head
+        streaming: true
+        max_train_docs: 250000
+        max_val_docs: 4000
+      - name: opc_anneal_snippets
+        dataset_name: OpenCoder-LLM/opc-annealing-corpus
+        dataset_config: synthetic_code_snippet
+        text_column: text
+        train_split: train
+        split_strategy: head
+        streaming: true
+        max_train_docs: 50000
+        max_val_docs: 1000
+      - name: opc_anneal_algorithmic
+        dataset_name: OpenCoder-LLM/opc-annealing-corpus
+        dataset_config: algorithmic_corpus
+        text_column: text
+        train_split: train
+        split_strategy: head
+        streaming: true
+        max_train_docs: 40000
+        max_val_docs: 800
+
+      # --- Reading comprehension QA (~5%, BoolQ / MMLU-style RC) ---
+      - name: boolq_train
+        dataset_name: google/boolq
+        row_formatter: boolq
+        train_split: train
+        split_strategy: head
+        streaming: true
+        max_train_docs: 9427
+        max_val_docs: 500
+      - name: squad_train
+        dataset_name: rajpurkar/squad
+        row_formatter: squad
+        train_split: train
+        split_strategy: head
+        streaming: true
+        max_train_docs: 87599
+        max_val_docs: 2000
+      - name: sciq_train
+        dataset_name: allenai/sciq
+        text_template: |
+          Support: {support}
+          Question: {question}
+          Answer: {correct_answer}
+        train_split: train
+        split_strategy: head
+        streaming: true
+        max_train_docs: 11679
+        max_val_docs: 500
+      - name: openbookqa_train
+        dataset_name: allenai/openbookqa
+        row_formatter: openbookqa
+        train_split: train
+        split_strategy: head
+        streaming: true
+        max_train_docs: 4957
+        max_val_docs: 300
+      - name: trivia_qa_rc
+        dataset_name: mandarjoshi/trivia_qa
+        dataset_config: rc
+        row_formatter: trivia_qa
+        train_split: train
+        split_strategy: head
+        streaming: true
+        max_train_docs: 150000
+        max_val_docs: 3000
+
+      # --- Factual / safety proxy (~1%, TruthfulQA-style) ---
+      - name: truthful_qa
+        dataset_name: truthful_qa
+        dataset_config: generation
+        text_template: |
+          Question: {question}
+          Answer: {best_answer}
+        train_split: validation
+        split_strategy: head
+        streaming: true
+        max_train_docs: 817
+        max_val_docs: 100
+
+      # --- Stories / commonsense (~4%, HellaSwag-style) ---
+      - name: tinystories
+        dataset_name: roneneldan/TinyStories
+        text_column: text
+        train_split: train
+        val_split: validation
+        split_strategy: head
+        streaming: true
+        max_train_docs: 600000
+        max_val_docs: 10000
+
+      # --- Clean wiki-style text (~2%, PPL / LAMBADA) ---
+      - name: wikitext103
+        dataset_name: wikitext
+        dataset_config: wikitext-103-raw-v1
+        text_column: text
+        train_split: train
+        val_split: validation
+        split_strategy: head
+        streaming: false
+        max_train_docs: 150000
+        max_val_docs: 5000
+
+      # --- STEM abstracts (~2%) ---
+      - name: arxiv_abstracts
+        dataset_name: nick007x/arxiv-papers
+        text_column: [title, subjects, abstract]
+        text_template: "Title: {title}\nSubjects: {subjects}\nAbstract: {abstract}"
+        train_split: train
+        split_strategy: head
+        streaming: true
+        max_train_docs: 120000
+        max_val_docs: 5000
+
+train:
+  seed: 1337
+  device: auto
+  dtype: bfloat16
+  out_dir: runs/rex-ouro-stage1-long
+  batch_size: 16
+  gradient_accumulation_steps: 2
+  epochs: 50
+  max_steps: 380000
+  learning_rate: 3.0e-4
+  min_lr: 3.0e-5
+  lr_schedule: warmup_stable_cosine
+  stable_steps: 320000
+  warmup_steps: 5000
+  weight_decay: 0.1
+  betas: [0.9, 0.95]
+  eps: 1.0e-8
+  grad_clip: 1.0
+  compile: true
+  resume: null
+  log_every: 10
+  eval_every: 2000
+  eval_batches: 100
+  save_every: 5000
+  eval:
+    mode: benchmarks
+    benchmarks:
+      tasks: hellaswag,arc_easy,arc_challenge,sciq,openbookqa,winogrande,boolq,val_ppl
+      val_batches: 20
+      batch_size: 2
+      mc_examples: 200
+      early_exit_threshold: null
+      quiet: true
+      save: true
+  wandb:
+    enabled: true
+    project: rex
+    name: rex-ouro-stage1-long
+    group: ouro-pipeline
+    tags: [ouro, stage1, looplm, 300m, benchmark-corpus, 50b-target]
+    notes: >
+      Benchmark-complete stage-1: edu web + textbooks + wiki + math Q&A (GSM-style)
+      + open math web (MegaMath/OPC/Open-Web-Math/Numina) + code + reading QA + TruthfulQA proxy.
+      ~30-40B unique tokens; 380k steps (~52B processed). Set max_steps=760k for ~100B.
+    mode: online

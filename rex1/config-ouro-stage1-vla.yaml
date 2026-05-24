@@ -1,0 +1,274 @@
+# Ouro Stage 1 (VLA) — embodied pretrain for a vision-language-action LM backbone.
+#
+# Text-only pretrain (no pixels). Teaches the language core what a VLA backbone needs
+# BEFORE vision encoders / action heads are attached. Downstream: config-ouro-stage4-vla-backbone.yaml
+#
+# Capability buckets baked into the mix:
+#   • Object & attribute language (COCO captions, VQA, CLEVR counting/colors)
+#   • Scene & situation understanding (visual QA, captions, wiki)
+#   • Spatial & relational reasoning (SpartQA, bAbI, CLEVR)
+#   • Action / manipulation language (ALFRED, ALFWorld trajectories)
+#   • Procedural planning & multi-step tasks (WikiHow, long packed trajectories)
+#   • Physical commonsense & affordances (TinyStories, SciQ, OpenBookQA)
+#   • Imperative / navigation-style instructions (bAbI, embodied chat)
+#   • General language stability (FineWeb-Edu, DCLM, Wikipedia)
+#
+# Longer context: max_seq_len=4096 (multi-step plans & trajectories). Same tokens/step
+# as 2048@bs16 via batch_size=8. For 2048 fallback, halve block_size and double batch_size.
+#
+# Build data (expect 12–24 hours):
+#   python download_data.py --config config-ouro-stage1-vla.yaml
+#
+# Train from scratch (~52B tokens @ 380k steps):
+#   torchrun --standalone --nproc_per_node=2 train.py --config config-ouro-stage1-vla.yaml
+#
+# Target mix (approximate token share):
+#   Scene / object / visual QA (Cauldron + captions)     ~28%
+#   Embodied action & trajectories (ALFRED, ALFWorld)     ~22%
+#   Spatial & relational (SpartQA, bAbI, CLEVR)            ~14%
+#   Procedural / physical how-to (Cosmopedia WikiHow)    ~12%
+#   Physical commonsense (TinyStories, SciQ, OBQA)       ~10%
+#   World / object knowledge (Wikipedia, edu web)        ~10%
+#   General edu stabilizer (FineWeb-Edu, DCLM)             ~4%
+
+model:
+  vocab_size: null
+  max_seq_len: 4096
+  d_model: 1536
+  n_heads: 16
+  n_kv_heads: 4
+  n_layers: 8
+  recurrence_steps: 4
+  ffn_dim: 3968
+  dropout: 0.0
+  norm_eps: 1.0e-5
+  tie_embeddings: true
+  use_step_embeddings: true
+  use_sandwich_norm: true
+  use_per_step_loss: false
+  use_exit_gates: true
+  exit_gate_beta: 0.15
+  local_block_size: 0
+  rope_theta: 100000.0
+  early_exit_threshold: null
+  initializer_range: 0.02
+
+data:
+  tokenizer_name: HuggingFaceTB/SmolLM2-360M
+  block_size: 4096
+  stride: 4096
+  pack_sequences: true
+  train_bin: data/stage1-vla/train.bin
+  val_bin: data/stage1-vla/val.bin
+  num_workers: 8
+  download:
+    default_system: >
+      You are the language backbone for an embodied agent. Describe scenes, objects,
+      spatial relations, and physical tasks clearly. Prefer concrete, actionable language.
+    sources:
+      # --- Scene descriptions (~8%) ---
+      - name: coco_captions
+        dataset_name: jxie/coco_captions
+        text_template: "Scene description: {caption}"
+        train_split: train
+        split_strategy: head
+        streaming: true
+        max_train_docs: 400000
+        max_val_docs: 8000
+
+      # --- Visual / scene QA (~20%, text-only from Cauldron — no images loaded) ---
+      - name: cauldron_vqav2
+        dataset_name: HuggingFaceM4/the_cauldron
+        dataset_config: vqav2
+        cauldron_qa: true
+        train_split: train
+        streaming: true
+        max_train_docs: 200000
+        max_val_docs: 4000
+      - name: cauldron_cocoqa
+        dataset_name: HuggingFaceM4/the_cauldron
+        dataset_config: cocoqa
+        cauldron_qa: true
+        train_split: train
+        streaming: true
+        max_train_docs: 150000
+        max_val_docs: 3000
+      - name: cauldron_aokvqa
+        dataset_name: HuggingFaceM4/the_cauldron
+        dataset_config: aokvqa
+        cauldron_qa: true
+        train_split: train
+        streaming: true
+        max_train_docs: 120000
+        max_val_docs: 3000
+      - name: cauldron_clevr
+        dataset_name: HuggingFaceM4/the_cauldron
+        dataset_config: clevr
+        cauldron_qa: true
+        train_split: train
+        streaming: true
+        max_train_docs: 180000
+        max_val_docs: 4000
+
+      # --- Embodied action language (~22%) ---
+      - name: alfred_steps
+        dataset_name: KoeYe/ALFRED
+        text_template: |
+          Household task: {goal_instr}
+          Task type: {task_type}
+          Step {step}: {action}
+        train_split: train
+        split_strategy: head
+        streaming: false
+        max_train_docs: 80000
+        max_val_docs: 2000
+      - name: alfworld_trajectories
+        dataset_name: u-10bei/sft_alfworld_trajectory_dataset_v2
+        conversation_column: messages
+        train_split: train
+        split_strategy: head
+        streaming: false
+        max_train_docs: 50000
+        max_val_docs: 1500
+
+      # --- Spatial & relational reasoning (~14%) ---
+      - name: spartqa
+        spartqa_joined: true
+        split: test
+        max_train_docs: 3594
+        max_val_docs: 0
+      - name: babi_spatial
+        dataset_name: Muennighoff/babi
+        row_formatter: babi
+        train_split: train
+        split_strategy: head
+        streaming: true
+        max_train_docs: 80000
+        max_val_docs: 2000
+
+      # --- Procedural / physical how-to (~12%) ---
+      - name: cosmopedia_wikihow
+        dataset_name: HuggingFaceTB/cosmopedia
+        dataset_config: wikihow
+        text_column: text
+        train_split: train
+        split_strategy: head
+        streaming: true
+        max_train_docs: 150000
+        max_val_docs: 4000
+      - name: cosmopedia_khanacademy
+        dataset_name: HuggingFaceTB/cosmopedia
+        dataset_config: khanacademy
+        text_column: text
+        train_split: train
+        split_strategy: head
+        streaming: true
+        max_train_docs: 100000
+        max_val_docs: 3000
+
+      # --- Physical commonsense & science (~10%) ---
+      - name: tinystories
+        dataset_name: roneneldan/TinyStories
+        text_column: text
+        train_split: train
+        val_split: validation
+        split_strategy: head
+        streaming: true
+        max_train_docs: 500000
+        max_val_docs: 8000
+      - name: sciq_train
+        dataset_name: allenai/sciq
+        text_template: |
+          Support: {support}
+          Question: {question}
+          Answer: {correct_answer}
+        train_split: train
+        split_strategy: head
+        streaming: true
+        max_train_docs: 11679
+        max_val_docs: 500
+      - name: openbookqa_train
+        dataset_name: allenai/openbookqa
+        row_formatter: openbookqa
+        train_split: train
+        split_strategy: head
+        streaming: true
+        max_train_docs: 4957
+        max_val_docs: 300
+
+      # --- World / object knowledge (~10%) ---
+      - name: wikipedia_en
+        dataset_name: wikimedia/wikipedia
+        dataset_config: "20231101.en"
+        text_column: text
+        train_split: train
+        split_strategy: head
+        streaming: true
+        max_train_docs: 500000
+        max_val_docs: 10000
+
+      # --- Edu stabilizer (~4%) ---
+      - name: fineweb_edu
+        dataset_name: HuggingFaceFW/fineweb-edu
+        dataset_config: sample-10BT
+        text_column: text
+        train_split: train
+        split_strategy: head
+        streaming: true
+        max_train_docs: 600000
+        max_val_docs: 8000
+      - name: dclm_edu_high
+        dataset_name: HuggingFaceTB/dclm-edu
+        text_column: text
+        train_split: train
+        split_strategy: head
+        streaming: true
+        row_filter_min:
+          edu_int_score: 3
+        max_train_docs: 400000
+        max_val_docs: 6000
+
+train:
+  seed: 1337
+  device: auto
+  dtype: bfloat16
+  out_dir: runs/rex-ouro-stage1-vla
+  batch_size: 8
+  gradient_accumulation_steps: 2
+  epochs: 50
+  max_steps: 380000
+  learning_rate: 3.0e-4
+  min_lr: 3.0e-5
+  lr_schedule: warmup_stable_cosine
+  stable_steps: 320000
+  warmup_steps: 5000
+  weight_decay: 0.1
+  betas: [0.9, 0.95]
+  eps: 1.0e-8
+  grad_clip: 1.0
+  compile: true
+  resume: null
+  log_every: 10
+  eval_every: 2000
+  eval_batches: 100
+  save_every: 5000
+  eval:
+    mode: benchmarks
+    benchmarks:
+      tasks: hellaswag,arc_easy,sciq,openbookqa,winogrande,boolq,val_ppl
+      val_batches: 20
+      batch_size: 2
+      mc_examples: 200
+      early_exit_threshold: null
+      quiet: true
+      save: true
+  wandb:
+    enabled: true
+    project: rex
+    name: rex-ouro-stage1-vla
+    group: ouro-pipeline
+    tags: [ouro, stage1, vla, embodied, looplm, 4096-ctx, 50b-target]
+    notes: >
+      VLA-tailored stage-1 pretrain: scene/object VQA, embodied actions, spatial QA,
+      procedural plans, physical commonsense. 4096 ctx, ~380k steps (~52B tokens).
+    mode: online

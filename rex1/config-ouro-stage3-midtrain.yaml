@@ -1,0 +1,177 @@
+# Ouro Stage 3 — mid-training (classic lab bridge between anneal and SFT).
+#
+# Target mix (~1.5B SmolLM2 tokens):
+#   Code (raw + snippets)     ~30%   450M tokens
+#   Math (web math)           ~25%   375M tokens
+#   Q/A + CoT                 ~25%   375M tokens
+#   Stage-1 replay            ~20%   300M tokens
+#
+# Tune proportions after download by checking data/midtrain-smollm/dataset_meta.yaml
+# and adjusting max_train_docs / max_train_tokens per source.
+#
+# Prerequisite: finish stage 2 anneal.
+#   runs/rex-ouro-stage2/ckpt_final.pt
+#
+# Build data (~1–3 hours):
+#   python download_data.py --config config-ouro-stage3-midtrain.yaml
+#
+# Train (2 GPU):
+#   torchrun --standalone --nproc_per_node=2 train.py --config config-ouro-stage3-midtrain.yaml \
+#     --init-from runs/rex-ouro-stage2/ckpt_final.pt
+#
+# Next stage: parallel SFT branches from midtrain checkpoint:
+#   config-ouro-stage4-chat.yaml         → REX1-Chat (phone / general assistant)
+#   config-ouro-stage4-vla-backbone.yaml → REX1-VLA-Backbone (robotics LM steering)
+#   config-ouro-stage4-code.yaml         → REX1-Code
+#   config-ouro-stage4-math.yaml         → REX1-Math
+
+model:
+  vocab_size: null
+  max_seq_len: 2048
+  d_model: 1536
+  n_heads: 16
+  n_kv_heads: 4
+  n_layers: 8
+  recurrence_steps: 4
+  ffn_dim: 3968
+  dropout: 0.0
+  norm_eps: 1.0e-5
+  tie_embeddings: true
+  use_step_embeddings: true
+  use_sandwich_norm: true
+  use_per_step_loss: false
+  use_exit_gates: true
+  exit_gate_beta: 0.03
+  local_block_size: 0
+  rope_theta: 50000.0
+  early_exit_threshold: 0.85
+  initializer_range: 0.02
+
+data:
+  tokenizer_name: HuggingFaceTB/SmolLM2-360M
+  block_size: 2048
+  stride: 2048
+  pack_sequences: true
+  train_bin: data/midtrain-smollm/train.bin
+  val_bin: data/midtrain-smollm/val.bin
+  num_workers: 8
+  download:
+    sources:
+      # --- Code (~30%, ~450M tokens) ---
+      - name: codeparrot_clean
+        dataset_name: codeparrot/codeparrot-clean
+        text_column: content
+        train_split: train
+        split_strategy: head
+        streaming: true
+        max_train_docs: 160000
+        max_val_docs: 3000
+
+      # --- Math (~25%, ~375M tokens) ---
+      - name: open_web_math
+        dataset_name: open-web-math/open-web-math
+        text_column: text
+        train_split: train
+        split_strategy: head
+        streaming: true
+        max_train_docs: 170000
+        max_val_docs: 4000
+
+      # --- Q/A + CoT (~25%, ~375M tokens) ---
+      - name: metamathqa
+        dataset_name: meta-math/MetaMathQA
+        text_template: |
+          Question: {query}
+          Answer: {response}
+        train_split: train
+        split_strategy: head
+        streaming: false
+        max_train_docs: 100000
+        max_val_docs: 2000
+
+      - name: openmath_instruct
+        dataset_name: nvidia/OpenMathInstruct-2
+        text_template: |
+          Question: {problem}
+          Answer: {generated_solution}
+        train_split: train
+        split_strategy: head
+        streaming: true
+        max_train_docs: 60000
+        max_val_docs: 1500
+
+      - name: openorca
+        dataset_name: Open-Orca/OpenOrca
+        text_template: |
+          Question: {question}
+          Answer: {response}
+        train_split: train
+        split_strategy: head
+        streaming: true
+        max_train_docs: 80000
+        max_val_docs: 2000
+
+      - name: alpaca_cleaned
+        dataset_name: yahma/alpaca-cleaned
+        text_template: |
+          Question: {instruction}
+          {input}
+          Answer: {output}
+        train_split: train
+        split_strategy: head
+        streaming: false
+        max_train_docs: 52000
+        max_val_docs: 1000
+
+      # --- Stage-1 replay (~20%, ~300M tokens) ---
+      - name: stage1_replay
+        replay_bin: data/stage1-smollm/train.bin
+        replay_val_bin: data/stage1-smollm/val.bin
+        max_train_tokens: 300000000
+        max_val_tokens: 8000000
+        seed: 1337
+        replay_chunk_min: 512
+        replay_chunk_max: 4096
+
+train:
+  seed: 1337
+  device: auto
+  dtype: bfloat16
+  out_dir: runs/rex-ouro-midtrain
+  batch_size: 16
+  gradient_accumulation_steps: 2
+  epochs: 3
+  max_steps: 20000
+  learning_rate: 1.0e-5
+  min_lr: 1.0e-6
+  lr_schedule: cosine
+  warmup_steps: 300
+  weight_decay: 0.1
+  betas: [0.9, 0.95]
+  eps: 1.0e-8
+  grad_clip: 1.0
+  compile: true
+  init_from: runs/rex-ouro-stage2/ckpt_final.pt
+  resume: null
+  log_every: 10
+  eval_every: 1000
+  save_every: 1000
+  eval:
+    mode: benchmarks
+    benchmarks:
+      tasks: hellaswag,arc_easy,arc_challenge,sciq,openbookqa,winogrande,val_ppl
+      val_batches: 10
+      batch_size: 2
+      mc_examples: 100
+      quiet: true
+      save: true
+  wandb:
+    enabled: true
+    project: rex
+    name: rex-ouro-midtrain
+    group: ouro-pipeline
+    tags: [ouro, stage3, midtrain, looplm, code, math, cot]
+    notes: >
+      Mid-training bridge — 30% code, 25% math, 25% Q/A+CoT, 20% stage-1 replay.
+      Lower LR (1e-5) after anneal; prepares base for SFT/RL.
+    mode: online
