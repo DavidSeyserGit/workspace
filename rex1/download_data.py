@@ -5,8 +5,12 @@ from __future__ import annotations
 import argparse
 import json
 import random
+import re
+from contextlib import ExitStack
 from pathlib import Path
 from typing import Any, BinaryIO, Iterable
+
+_ROLE_HEADER_RE = re.compile(r"<\|(system|user|assistant|tool)\|>\n?")
 
 import numpy as np
 import yaml
@@ -330,6 +334,35 @@ def _iter_text(
             yield text
 
 
+def _mask_path_for(bin_path: Path) -> Path:
+    return bin_path.with_name(f"{bin_path.stem}.mask.bin")
+
+
+def _encode_document(text: str, tokenizer: AutoTokenizer) -> tuple[list[int], list[int]]:
+    """Return token ids and a per-token supervise mask (1 = include in loss as target)."""
+    if "<|assistant|>" not in text and "<|tool|>" not in text and "<|system|>" not in text:
+        ids = tokenizer.encode(text, add_special_tokens=False)
+        return ids, [1] * len(ids)
+
+    full_ids = tokenizer.encode(text, add_special_tokens=False)
+    if not full_ids:
+        return [], []
+
+    supervise = [0] * len(full_ids)
+    for match in _ROLE_HEADER_RE.finditer(text):
+        role = match.group(1)
+        if role != "assistant":
+            continue
+        content_start = match.end()
+        next_header = _ROLE_HEADER_RE.search(text, content_start)
+        content_end = next_header.start() if next_header else len(text)
+        prefix_len = len(tokenizer.encode(text[:content_start], add_special_tokens=False))
+        through_len = len(tokenizer.encode(text[:content_end], add_special_tokens=False))
+        for idx in range(prefix_len, min(through_len, len(supervise))):
+            supervise[idx] = 1
+    return full_ids, supervise
+
+
 def _skip(items: Iterable[str], n: int) -> Iterable[str]:
     iterator = iter(items)
     for _ in range(max(0, n)):
@@ -347,17 +380,21 @@ def _write_tokens_to_file(
     tokenizer: AutoTokenizer,
     max_docs: int | None,
     desc: str,
+    mask_file: BinaryIO | None = None,
 ) -> tuple[int, int]:
     eos_id = tokenizer.eos_token_id
     docs = 0
     tokens = 0
     for text in tqdm(texts, desc=desc):
-        ids = tokenizer.encode(text, add_special_tokens=False)
+        ids, supervise = _encode_document(text, tokenizer)
         if eos_id is not None:
             ids.append(eos_id)
+            supervise.append(1 if supervise and supervise[-1] else 0)
         if not ids:
             continue
         np.asarray(ids, dtype=np.int32).tofile(file)
+        if mask_file is not None:
+            np.asarray(supervise, dtype=np.uint8).tofile(mask_file)
         docs += 1
         tokens += len(ids)
         if max_docs is not None and docs >= max_docs:
@@ -371,16 +408,24 @@ def _write_tokens(
     out_path: Path,
     tokenizer: AutoTokenizer,
     max_docs: int | None,
+    write_masks: bool = False,
 ) -> tuple[int, int]:
     out_path.parent.mkdir(parents=True, exist_ok=True)
+    mask_path = _mask_path_for(out_path) if write_masks else None
     with open(out_path, "wb") as f:
-        return _write_tokens_to_file(
-            texts=texts,
-            file=f,
-            tokenizer=tokenizer,
-            max_docs=max_docs,
-            desc=f"tokenizing {out_path.name}",
-        )
+        mask_handle = open(mask_path, "wb") if mask_path is not None else None
+        try:
+            return _write_tokens_to_file(
+                texts=texts,
+                file=f,
+                tokenizer=tokenizer,
+                max_docs=max_docs,
+                desc=f"tokenizing {out_path.name}",
+                mask_file=mask_handle,
+            )
+        finally:
+            if mask_handle is not None:
+                mask_handle.close()
 
 
 def _load_source_dataset(source_cfg: dict[str, Any], split: str) -> Iterable[dict[str, Any]]:
@@ -486,6 +531,8 @@ def _write_replay_tokens_to_file(
     chunk_min: int = 512,
     chunk_max: int = 4096,
     desc: str,
+    mask_file: BinaryIO | None = None,
+    replay_mask_bin: Path | None = None,
 ) -> tuple[int, int]:
     if max_tokens is not None and max_tokens <= 0:
         return 0, 0
@@ -495,6 +542,11 @@ def _write_replay_tokens_to_file(
     data = np.memmap(replay_bin, dtype=np.int32, mode="r")
     if data.size <= chunk_min:
         return 0, 0
+    replay_masks = None
+    if replay_mask_bin is not None and replay_mask_bin.exists():
+        replay_masks = np.memmap(replay_mask_bin, dtype=np.uint8, mode="r")
+        if replay_masks.size != data.size:
+            replay_masks = None
 
     rng = random.Random(seed)
     emitted = 0
@@ -511,6 +563,12 @@ def _write_replay_tokens_to_file(
         start = rng.randint(0, max(0, data.size - chunk_len))
         chunk = np.asarray(data[start : start + chunk_len], dtype=np.int32)
         chunk.tofile(file)
+        if mask_file is not None:
+            if replay_masks is not None:
+                mask_chunk = np.asarray(replay_masks[start : start + chunk_len], dtype=np.uint8)
+            else:
+                mask_chunk = np.ones(chunk_len, dtype=np.uint8)
+            mask_chunk.tofile(mask_file)
         emitted += int(chunk.size)
         docs += 1
         pbar.update(int(chunk.size))
@@ -525,12 +583,19 @@ def _download_mixed_sources(
     val_bin: Path,
     tokenizer: AutoTokenizer,
     default_system: str | None = None,
+    write_masks: bool = False,
 ) -> tuple[list[dict[str, Any]], int, int, int, int]:
     train_bin.parent.mkdir(parents=True, exist_ok=True)
     val_bin.parent.mkdir(parents=True, exist_ok=True)
+    train_mask_path = _mask_path_for(train_bin) if write_masks else None
+    val_mask_path = _mask_path_for(val_bin) if write_masks else None
     source_meta = []
     train_docs = train_tokens = val_docs = val_tokens = 0
-    with open(val_bin, "wb") as val_file, open(train_bin, "wb") as train_file:
+    with ExitStack() as stack:
+        val_file = stack.enter_context(open(val_bin, "wb"))
+        train_file = stack.enter_context(open(train_bin, "wb"))
+        val_mask_file = stack.enter_context(open(val_mask_path, "wb")) if val_mask_path else None
+        train_mask_file = stack.enter_context(open(train_mask_path, "wb")) if train_mask_path else None
         for source_cfg in sources:
             label = source_cfg.get("name") or source_cfg.get("dataset_name") or source_cfg.get("replay_bin", "source")
             if source_cfg.get("replay_bin"):
@@ -547,6 +612,8 @@ def _download_mixed_sources(
                     chunk_min=chunk_min,
                     chunk_max=chunk_max,
                     desc=f"replaying val:{label}",
+                    mask_file=val_mask_file,
+                    replay_mask_bin=_mask_path_for(replay_val),
                 )
                 current_train_docs, current_train_tokens = _write_replay_tokens_to_file(
                     replay_bin=replay_train,
@@ -556,6 +623,8 @@ def _download_mixed_sources(
                     chunk_min=chunk_min,
                     chunk_max=chunk_max,
                     desc=f"replaying train:{label}",
+                    mask_file=train_mask_file,
+                    replay_mask_bin=_mask_path_for(replay_train),
                 )
                 source_meta.append(
                     {
@@ -580,6 +649,7 @@ def _download_mixed_sources(
                     tokenizer=tokenizer,
                     max_docs=source_max_val_docs,
                     desc=f"tokenizing val:{label}",
+                    mask_file=val_mask_file,
                 )
                 current_train_docs, current_train_tokens = _write_tokens_to_file(
                     texts=_source_texts(source_cfg, want_val=False, default_system=default_system),
@@ -587,6 +657,7 @@ def _download_mixed_sources(
                     tokenizer=tokenizer,
                     max_docs=source_max_train_docs,
                     desc=f"tokenizing train:{label}",
+                    mask_file=train_mask_file,
                 )
                 source_meta.append(
                     {
@@ -630,6 +701,7 @@ def download_and_tokenize(cfg: dict[str, Any]) -> dict[str, Any]:
     tokenizer = AutoTokenizer.from_pretrained(tokenizer_name, use_fast=True)
     sources = dl_cfg.get("sources")
     default_system = dl_cfg.get("default_system")
+    write_masks = bool(data_cfg.get("assistant_only_loss", False))
 
     if sources:
         source_meta, train_docs, train_tokens, val_docs, val_tokens = _download_mixed_sources(
@@ -638,6 +710,7 @@ def download_and_tokenize(cfg: dict[str, Any]) -> dict[str, Any]:
             val_bin=val_bin,
             tokenizer=tokenizer,
             default_system=default_system,
+            write_masks=write_masks,
         )
         meta = {
             "dataset_name": "mixed",
@@ -649,8 +722,12 @@ def download_and_tokenize(cfg: dict[str, Any]) -> dict[str, Any]:
             "train_tokens": train_tokens,
             "val_tokens": val_tokens,
             "dtype": "int32",
+            "assistant_only_loss": write_masks,
             "sources": source_meta,
         }
+        if write_masks:
+            meta["train_mask_bin"] = str(_mask_path_for(train_bin))
+            meta["val_mask_bin"] = str(_mask_path_for(val_bin))
         meta_path = train_bin.parent / "dataset_meta.yaml"
         with open(meta_path, "w", encoding="utf-8") as f:
             yaml.safe_dump(meta, f, sort_keys=False)
@@ -668,12 +745,14 @@ def download_and_tokenize(cfg: dict[str, Any]) -> dict[str, Any]:
             out_path=train_bin,
             tokenizer=tokenizer,
             max_docs=max_train_docs,
+            write_masks=write_masks,
         )
         val_docs, val_tokens = _write_tokens(
             texts=_iter_text(val_ds, text_column),
             out_path=val_bin,
             tokenizer=tokenizer,
             max_docs=max_val_docs,
+            write_masks=write_masks,
         )
     elif split_strategy == "head":
         if max_val_docs is None:
@@ -684,6 +763,7 @@ def download_and_tokenize(cfg: dict[str, Any]) -> dict[str, Any]:
             out_path=val_bin,
             tokenizer=tokenizer,
             max_docs=max_val_docs,
+            write_masks=write_masks,
         )
         source_ds = load_dataset(dataset_name, split=train_split, **load_kwargs)
         train_docs, train_tokens = _write_tokens(
@@ -691,6 +771,7 @@ def download_and_tokenize(cfg: dict[str, Any]) -> dict[str, Any]:
             out_path=train_bin,
             tokenizer=tokenizer,
             max_docs=max_train_docs,
+            write_masks=write_masks,
         )
     else:
         rng = random.Random(seed)
@@ -716,6 +797,7 @@ def download_and_tokenize(cfg: dict[str, Any]) -> dict[str, Any]:
             out_path=val_bin,
             tokenizer=tokenizer,
             max_docs=max_val_docs,
+            write_masks=write_masks,
         )
         source_ds = load_dataset(dataset_name, split=train_split, **load_kwargs)
         rng = random.Random(seed)
@@ -724,6 +806,7 @@ def download_and_tokenize(cfg: dict[str, Any]) -> dict[str, Any]:
             out_path=train_bin,
             tokenizer=tokenizer,
             max_docs=max_train_docs,
+            write_masks=write_masks,
         )
 
     meta = {
@@ -733,12 +816,16 @@ def download_and_tokenize(cfg: dict[str, Any]) -> dict[str, Any]:
         "text_column": text_column,
         "train_bin": str(train_bin),
         "val_bin": str(val_bin),
+        "assistant_only_loss": write_masks,
         "train_docs": train_docs,
         "val_docs": val_docs,
         "train_tokens": train_tokens,
         "val_tokens": val_tokens,
         "dtype": "int32",
     }
+    if write_masks:
+        meta["train_mask_bin"] = str(_mask_path_for(train_bin))
+        meta["val_mask_bin"] = str(_mask_path_for(val_bin))
     meta_path = train_bin.parent / "dataset_meta.yaml"
     with open(meta_path, "w", encoding="utf-8") as f:
         yaml.safe_dump(meta, f, sort_keys=False)

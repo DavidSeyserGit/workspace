@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import multiprocessing as mp
+import os
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
@@ -25,6 +26,15 @@ except ImportError:  # pragma: no cover - optional dependency at import time
 
 DEFAULT_TASKS = "hellaswag,arc_easy,winogrande,sciq,openbookqa,mmlu,gsm8k"
 DEFAULT_HARNESS_BATCH_SIZE = 64
+CODE_EVAL_TASKS = frozenset({"humaneval", "mbpp"})
+
+
+def _needs_code_eval(tasks: list[str]) -> bool:
+    return any(task.lower() in CODE_EVAL_TASKS for task in tasks)
+
+
+def _enable_code_eval() -> None:
+    os.environ.setdefault("HF_ALLOW_CODE_EVAL", "1")
 
 
 class RexLmEvalAdapter(LM):
@@ -289,6 +299,9 @@ def _run_single_harness_task(
     limit: float | None,
     recurrence_steps: int | None,
 ) -> tuple[str, dict[str, Any], str | None]:
+    if task.lower() in CODE_EVAL_TASKS:
+        _enable_code_eval()
+
     try:
         from lm_eval import evaluator
     except ImportError as exc:
@@ -308,6 +321,7 @@ def _run_single_harness_task(
         num_fewshot=num_fewshot,
         batch_size=batch_size,
         limit=limit,
+        confirm_run_unsafe_code=task.lower() in CODE_EVAL_TASKS,
     )
     task_results = payload.get("results", {}) if payload else {}
     return task, task_results, None
@@ -333,6 +347,10 @@ def run_harness_benchmarks(
     dtype_name: str = "bfloat16",
     parallel_gpus: int = 1,
 ) -> dict[str, Any]:
+    code_eval_tasks = _needs_code_eval(tasks)
+    if code_eval_tasks:
+        _enable_code_eval()
+
     try:
         from lm_eval.api.model import LM as LMEvalModel
     except ImportError as exc:
@@ -431,6 +449,7 @@ def run_harness_benchmarks(
                 num_fewshot=num_fewshot,
                 batch_size=batch_size,
                 limit=limit,
+                confirm_run_unsafe_code=task.lower() in CODE_EVAL_TASKS,
             )
             task_results = payload.get("results", {}) if payload else {}
             results["results"].update(task_results)

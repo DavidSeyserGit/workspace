@@ -433,7 +433,7 @@ train:
   log_every: 10
   eval_every: 2000
   eval_batches: 100
-  save_every: 5000
+  save_every: 2000
   eval:
     mode: benchmarks
     benchmarks:

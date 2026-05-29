@@ -5,7 +5,7 @@
 # Prerequisite:
 #   runs/rex-ouro-midtrain/ckpt_final.pt
 #
-# Build data (~45–90 min):
+# Build data (~45–90 min; regenerates train.mask.bin for assistant-only loss):
 #   python download_data.py --config config-ouro-stage4-chat.yaml
 #
 # Train (2 GPU):
@@ -44,6 +44,7 @@ data:
   block_size: 2048
   stride: 2048
   pack_sequences: true
+  assistant_only_loss: true
   train_bin: data/chat-sft/train.bin
   val_bin: data/chat-sft/val.bin
   train_bins:
